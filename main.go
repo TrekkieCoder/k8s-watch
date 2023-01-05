@@ -1,59 +1,57 @@
 package main
 
-import (
-	"fmt"
-	"context"
-	coreV1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
-	"k8s.io/client-go/tools/clientcmd"
-)
+    import (
+        "fmt"
+        "time"
 
-func main() {
-  const namespace = "default"
+         "k8s.io/api/core/v1"
+         "k8s.io/apimachinery/pkg/fields"
+         "k8s.io/client-go/kubernetes"
+         "k8s.io/client-go/tools/cache"
+         "k8s.io/client-go/tools/clientcmd"
+    )
 
-	// AUTHENTICATE
-	// /etc/rancher/k3s/k3s.yaml
-	var kubeconfig = "/etc/rancher/k3s/k3s.yaml"
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
-	if err != nil {
-		panic(err.Error())
-	}
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		panic(err.Error())
-	}
+    func main() {
+        config, err := clientcmd.BuildConfigFromFlags("", "/etc/rancher/k3s/k3s.yaml")
+        if err != nil {
+            fmt.Println(err)
+        }
+        clientset, err := kubernetes.NewForConfig(config)
+        if err != nil {
+			fmt.Println(err)
+        }
 
-	// GET ENDPOINTS RESOURCE VERSION
-	ctx := context.Background()
-
-	var api = clientset.CoreV1().Endpoints(namespace)
-	endpoints, err := api.List(ctx, metav1.ListOptions{})
-	if err != nil {
-		panic(err.Error())
-	}
-	resourceVersion := endpoints.ListMeta.ResourceVersion
-
-	// SETUP WATCHER CHANNEL
-	watcher, err := api.Watch(ctx, metav1.ListOptions{ResourceVersion: resourceVersion})
-	if err != nil {
-		panic(err.Error())
-	}
-	ch := watcher.ResultChan()
-
-	// LISTEN TO CHANNEL
-	for {
-		event := <-ch
-		endpoints, ok := event.Object.(*coreV1.Endpoints)
-		if !ok {
-			panic("Could not cast to Endpoint")
-		}
-		fmt.Printf("%v\n", endpoints.ObjectMeta.Name)
-		for _, endpoint := range endpoints.Subsets {
-			for _, address := range endpoint.Addresses {
-				fmt.Printf("%v\n", address.IP)
-			}
-		}
-	}
-}
+        watchlist := cache.NewListWatchFromClient(
+            clientset.CoreV1().RESTClient(),
+            string(v1.ResourceServices),
+            v1.NamespaceAll,
+            fields.Everything(),
+        )
+        _, controller := cache.NewInformer( // also take a look at NewSharedIndexInformer
+            watchlist,
+            &v1.Service{},
+            0, //Duration is int64
+            cache.ResourceEventHandlerFuncs{
+                AddFunc: func(obj interface{}) {
+                    fmt.Printf("service added: %s \n", obj)
+                },
+                DeleteFunc: func(obj interface{}) {
+                    fmt.Printf("service deleted: %s \n", obj)
+                },
+                UpdateFunc: func(oldObj, newObj interface{}) {
+                    fmt.Printf("service changed \n")
+                },
+             },
+         )
+         // I found it in k8s scheduler module. Maybe it's help if you interested in.
+         // serviceInformer := cache.NewSharedIndexInformer(watchlist, &v1.Service{}, 0, cache.Indexers{
+         //     cache.NamespaceIndex: cache.MetaNamespaceIndexFunc,
+         // })
+         // go serviceInformer.Run(stop)
+        stop := make(chan struct{})
+        defer close(stop)
+        go controller.Run(stop)
+        for {
+            time.Sleep(time.Second)
+        }
+    }
